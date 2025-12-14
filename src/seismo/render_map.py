@@ -1,24 +1,46 @@
 from __future__ import annotations
 
 import os
+import urllib.request
+import zipfile
 import numpy as np
 import matplotlib.pyplot as plt
 import geopandas as gpd
 
 
+NE_URL = "https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/110m/cultural/ne_110m_admin_0_countries.zip"
+
+
+def _load_world_outline() -> gpd.GeoDataFrame:
+    """
+    Download and cache Natural Earth world boundaries if needed.
+    Compatible with GeoPandas >= 1.0.
+    """
+    data_dir = os.path.join("data", "natural_earth")
+    shp_path = os.path.join(data_dir, "ne_110m_admin_0_countries.shp")
+
+    if not os.path.exists(shp_path):
+        os.makedirs(data_dir, exist_ok=True)
+        zip_path = os.path.join(data_dir, "ne.zip")
+
+        print("Downloading Natural Earth world boundaries...")
+        urllib.request.urlretrieve(NE_URL, zip_path)
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(data_dir)
+
+    return gpd.read_file(shp_path)
+
+
 def render_frames(events, out_dir: str, duration_s: float, fps: int = 30) -> None:
     """
-    Render seismic events on a dark-mode world map with coastline outlines.
-
-    Improvements:
-    - World map outline (Natural Earth)
-    - Dark background with bright events
-    - Display Month + Year instead of abstract t
+    Render seismic events on a dark-mode world map with coastline outlines
+    and Month–Year labels.
     """
 
     os.makedirs(out_dir, exist_ok=True)
 
-    # ---- Time handling (tz-safe, pandas-native) ----
+    # ---- Time handling (tz-safe) ----
     t0 = events["time"].min()
     t1 = events["time"].max()
     span = (t1 - t0).total_seconds()
@@ -27,7 +49,6 @@ def render_frames(events, out_dir: str, duration_s: float, fps: int = 30) -> Non
 
     nframes = int(duration_s * fps)
 
-    # ---- Preconvert arrays ----
     lats = events["lat"].to_numpy()
     lons = events["lon"].to_numpy()
     mags = events["mag"].to_numpy()
@@ -36,34 +57,30 @@ def render_frames(events, out_dir: str, duration_s: float, fps: int = 30) -> Non
         (events["time"] - t0).dt.total_seconds() / span * duration_s
     ).to_numpy()
 
-    # ---- Load world map outline (once) ----
-    world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+    # ---- Load world map outline (cached) ----
+    world = _load_world_outline()
 
     # ---- Styling ----
     bg_color = "black"
-    map_color = "#444444"     # muted gray
-    event_color = "#00BFFF"   # deep sky blue
+    map_color = "#444444"
+    event_color = "#00BFFF"
 
     for i in range(nframes):
         now = i / fps
 
-        # Sliding time window (seconds)
         window = 6.0
         mask = (event_vid_times >= now - window) & (event_vid_times <= now)
         idx = np.where(mask)[0]
 
-        # ---- Interpolated real-world time for label ----
         frac = np.clip(now / duration_s, 0.0, 1.0)
         current_time = t0 + (t1 - t0) * frac
         time_label = current_time.strftime("%B %Y")
 
-        # ---- Figure ----
         fig = plt.figure(figsize=(12, 6), dpi=150)
         ax = fig.add_subplot(111)
         fig.patch.set_facecolor(bg_color)
         ax.set_facecolor(bg_color)
 
-        # World outline
         world.boundary.plot(
             ax=ax,
             linewidth=0.6,
@@ -83,12 +100,11 @@ def render_frames(events, out_dir: str, duration_s: float, fps: int = 30) -> Non
             pad=10
         )
 
-        # ---- Plot events ----
         if idx.size:
             age = now - event_vid_times[idx]
             alpha = np.clip(1.0 - age / window, 0.05, 1.0)
-
             size = 12 + (mags[idx] ** 2)
+
             ax.scatter(
                 lons[idx],
                 lats[idx],
