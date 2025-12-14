@@ -1,33 +1,38 @@
 from __future__ import annotations
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-def render_frames(events, out_dir: str, duration_s: float, fps: int = 30):
+
+def render_frames(events, out_dir: str, duration_s: float, fps: int = 30) -> None:
+    """
+    Render simple world-map frames (lon/lat grid) with a fading trail of recent events.
+
+    Fix: handle tz-aware pandas timestamps without mixing tz-naive numpy datetime64.
+    """
     os.makedirs(out_dir, exist_ok=True)
+
     t0 = events["time"].min()
     t1 = events["time"].max()
     span = (t1 - t0).total_seconds()
+    if span <= 0:
+        raise ValueError("Need events spanning time.")
 
     nframes = int(duration_s * fps)
 
-    # Preconvert to arrays for speed
     lats = events["lat"].to_numpy()
     lons = events["lon"].to_numpy()
     mags = events["mag"].to_numpy()
-    times = events["time"].to_numpy()
 
-    # map time->audio time
-    def time_to_vid_s(t):
-        # t is numpy datetime64[ns]
-        dt = (t - np.datetime64(t0)).astype("timedelta64[s]").astype(float)
-        return dt / span * duration_s
-
-    event_vid_times = np.array([time_to_vid_s(t) for t in times])
+    # tz-safe, pandas-native timing -> seconds in compressed video space
+    event_vid_times = (
+        (events["time"] - t0).dt.total_seconds() / span * duration_s
+    ).to_numpy()
 
     for i in range(nframes):
         now = i / fps
-        # show last X seconds of events as fading trail
+
         window = 6.0
         mask = (event_vid_times >= now - window) & (event_vid_times <= now)
         idx = np.where(mask)[0]
@@ -44,7 +49,7 @@ def render_frames(events, out_dir: str, duration_s: float, fps: int = 30):
         if idx.size:
             age = now - event_vid_times[idx]
             alpha = np.clip(1.0 - age / window, 0.05, 1.0)
-            size = 10 + (mags[idx] ** 2)  # simple scale
+            size = 10 + (mags[idx] ** 2)
             ax.scatter(lons[idx], lats[idx], s=size, alpha=alpha)
 
         frame_path = os.path.join(out_dir, f"frame_{i:06d}.png")
