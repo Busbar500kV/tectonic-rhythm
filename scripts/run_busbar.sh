@@ -1,104 +1,108 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------
-# CONFIG
-# ------------------------------
-REPO_NAME="tectonic-rhythm"
-HOME_DIR="${HOME}"
-REPO_DIR="${HOME_DIR}/${REPO_NAME}"
+# ==============================
+# scripts/run_busbar.sh
+# Runs the pipeline on busbar, commits out/final.mp4, pushes to GitHub.
+# Works regardless of where you launch it from.
+# ==============================
 
-OUT_DIR="out"
-FINAL_MP4="out/final.mp4"
+# Resolve repo root from this script location (no hardcoded ~/repo-name assumptions)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+OUT_DIR="${REPO_DIR}/out"
+FRAMES_DIR="${OUT_DIR}/frames"
+AUDIO="${OUT_DIR}/audio.wav"
+VIDEO="${OUT_DIR}/video.mp4"
+FINAL="${OUT_DIR}/final.mp4"
 
 STAMP="$(date -u +'%Y-%m-%dT%H%M%SZ')"
-COMMIT_MSG="Render seismic soundtrack ${STAMP}"
+COMMIT_MSG="Render output ${STAMP}"
 
-# ------------------------------
-# LOCATE REPO
-# ------------------------------
-echo "🔍 Locating repository: ${REPO_NAME}"
+echo "[run_busbar] Repo dir: ${REPO_DIR}"
+cd "${REPO_DIR}"
 
-if [[ ! -d "${REPO_DIR}/.git" ]]; then
-  echo "❌ ERROR: Git repo not found at ${REPO_DIR}"
-  echo "   Did you clone it?"
+# Ensure we're in a git repo
+if [[ ! -d ".git" ]]; then
+  echo "ERROR: ${REPO_DIR} is not a git repository (missing .git)"
   exit 1
 fi
 
-cd "${REPO_DIR}"
-echo "📁 In repo: $(pwd)"
-echo "🔗 Remote:"
-git remote -v
+echo "[run_busbar] Remote:"
+git remote -v || true
 
-# ------------------------------
-# SYNC WITH GITHUB
-# ------------------------------
-echo "⬇️  Syncing with origin/main"
+# Sync with GitHub
+echo "[run_busbar] Fetch + reset to origin/main"
 git fetch origin
 git checkout main
 git reset --hard origin/main
 
-# ------------------------------
-# PYTHON ENV
-# ------------------------------
+# Python venv
 if [[ ! -d "venv" ]]; then
-  echo "🐍 Creating Python venv"
+  echo "[run_busbar] Creating venv/"
   python3 -m venv venv
 fi
 
-echo "🐍 Activating venv"
+echo "[run_busbar] Activating venv"
 # shellcheck disable=SC1091
 source venv/bin/activate
+
 python -m pip install --upgrade pip >/dev/null
 
+# Install deps
 if [[ -f "requirements.txt" ]]; then
+  echo "[run_busbar] Installing requirements.txt"
   pip install -r requirements.txt
 elif [[ -f "pyproject.toml" ]]; then
+  echo "[run_busbar] Installing from pyproject.toml"
   pip install -e .
 else
+  echo "[run_busbar] Installing minimal deps (no requirements.txt / pyproject.toml found)"
   pip install requests pandas numpy scipy matplotlib geopandas shapely pyproj
 fi
 
-# ------------------------------
-# SYSTEM CHECKS
-# ------------------------------
-echo "🎥 Checking ffmpeg"
-command -v ffmpeg >/dev/null || { echo "❌ ffmpeg not found"; exit 1; }
+# System checks
+echo "[run_busbar] Checking ffmpeg"
+command -v ffmpeg >/dev/null 2>&1 || { echo "ERROR: ffmpeg not found"; exit 1; }
 
-# ------------------------------
-# CLEAN OUTPUTS
-# ------------------------------
-echo "🧹 Cleaning outputs"
-rm -rf out/frames
-rm -f out/audio.wav out/video.mp4
-mkdir -p out/frames
+# Clean outputs (frames are huge)
+echo "[run_busbar] Cleaning outputs"
+mkdir -p "${OUT_DIR}"
+rm -f "${AUDIO}" "${VIDEO}" "${FINAL}"
+rm -rf "${FRAMES_DIR}"
+mkdir -p "${FRAMES_DIR}"
 
-# ------------------------------
-# RUN PIPELINE
-# ------------------------------
-echo "🚀 Running seismic render pipeline"
+# Run pipeline (make src importable)
+echo "[run_busbar] Running pipeline"
+export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 python -u scripts/run_pipeline.py
 
-if [[ ! -f "${FINAL_MP4}" ]]; then
-  echo "❌ ERROR: ${FINAL_MP4} not produced"
+# Validate output
+if [[ ! -f "${FINAL}" ]]; then
+  echo "ERROR: ${FINAL} was not created."
   exit 1
 fi
 
-ls -lh "${FINAL_MP4}"
+echo "[run_busbar] Final artifact:"
+ls -lh "${FINAL}"
 
-# ------------------------------
-# COMMIT & PUSH RESULT
-# ------------------------------
-echo "📦 Committing final artifact"
+# Warn if big (GitHub may reject large files)
+FILE_MB=$(du -m "${FINAL}" | awk '{print $1}')
+if [[ "${FILE_MB}" -gt 90 ]]; then
+  echo "WARNING: final.mp4 is ${FILE_MB} MB. GitHub may reject large pushes."
+  echo "Tip: reduce duration_s and/or fps in scripts/run_pipeline.py"
+fi
 
-git add "${FINAL_MP4}"
+# Commit + push final.mp4 only
+echo "[run_busbar] Git add + commit + push"
+git add "out/final.mp4"
 
 if git diff --cached --quiet; then
-  echo "ℹ️  No changes to commit"
+  echo "[run_busbar] No changes to commit."
   exit 0
 fi
 
 git commit -m "${COMMIT_MSG}"
 git push origin main
 
-echo "✅ Done. ${FINAL_MP4} pushed to GitHub."
+echo "[run_busbar] Done. Pushed out/final.mp4"
