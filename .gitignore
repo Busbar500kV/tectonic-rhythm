@@ -1,0 +1,15 @@
+# virtualenv
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Huge render intermediates
+out/frames/
+out/video.mp4
+out/audio.wav
+
+# Keep final output tracked
+!out/final.mp4
